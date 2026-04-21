@@ -5,7 +5,7 @@ const socket = io()
 
 type TorrentFile = { name: string; url: string; size: number }
 type Progress = { progress: number; downloadSpeed: number; done: boolean; numPeers?: number }
-type TorrentEntry = { name: string; meta: boolean; uploading?: boolean; progress: Progress; files: TorrentFile[]; error?: string }
+type TorrentEntry = { name: string; meta: boolean; progress: Progress; files: TorrentFile[]; error?: string }
 
 export default function App() {
   const [torrents, setTorrents] = useState<Record<string, TorrentEntry>>({})
@@ -30,16 +30,12 @@ export default function App() {
           return next
         })
         list.forEach(t => {
-          socket.on(`meta:${t.id}`, ({ name }: { name: string }) =>
-            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], name, meta: true } })))
+          socket.on(`meta:${t.id}`, ({ name, files }: { name: string; files: TorrentFile[] }) =>
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], name, meta: true, files } })))
           socket.on(`progress:${t.id}`, (data: Progress) =>
             setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], progress: data } })))
-          socket.on(`uploading:${t.id}`, () =>
-            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], uploading: true } })))
-          socket.on(`done:${t.id}`, ({ files }: { files: TorrentFile[] }) =>
-            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], uploading: false, files } })))
           socket.on(`error:${t.id}`, ({ error }: { error: string }) =>
-            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], uploading: false, error } })))
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], error } })))
         })
       })
   }, [])
@@ -77,24 +73,16 @@ export default function App() {
       [id]: { name, meta: false, progress: { progress: 0, downloadSpeed: 0, done: false }, files: [] }
     }))
 
-    socket.on(`meta:${id}`, ({ name: realName }: { name: string }) => {
-      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], name: realName, meta: true } }))
+    socket.on(`meta:${id}`, ({ name: realName, files }: { name: string; files: TorrentFile[] }) => {
+      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], name: realName, meta: true, files } }))
     })
 
     socket.on(`progress:${id}`, (data: Progress) => {
       setTorrents(prev => ({ ...prev, [id]: { ...prev[id], progress: data } }))
     })
 
-    socket.on(`uploading:${id}`, () => {
-      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], uploading: true } }))
-    })
-
-    socket.on(`done:${id}`, ({ files }: { files: TorrentFile[] }) => {
-      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], uploading: false, files } }))
-    })
-
     socket.on(`error:${id}`, ({ error }: { error: string }) => {
-      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], uploading: false, error } }))
+      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], error } }))
     })
   }
 
@@ -102,12 +90,10 @@ export default function App() {
     <div style={{ maxWidth: 700, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>🌱 My Torrent Downloader</h1>
 
-      {/* Upload .torrent file */}
       <input ref={fileRef} type="file" accept=".torrent" style={{ display: 'none' }}
         onChange={e => e.target.files?.[0] && uploadTorrent(e.target.files[0])} />
       <button onClick={() => fileRef.current?.click()}>Upload .torrent file</button>
 
-      {/* Magnet link */}
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <input
           value={magnet}
@@ -121,7 +107,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* Torrent list */}
       {Object.entries(torrents).map(([id, t]) => (
         <div key={id} style={{ border: '1px solid #ccc', padding: 16, marginTop: 16, borderRadius: 8 }}>
           <strong>{t.meta ? t.name : 'Fetching metadata...'}</strong>
@@ -133,21 +118,24 @@ export default function App() {
             <div style={{ background: '#eee', borderRadius: 4, height: 8, margin: '8px 0' }}>
               <div style={{ background: '#4caf50', width: `${t.progress.progress}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
             </div>
-            <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? 0}</div>
+            <div style={{ fontSize: 13, color: '#555' }}>
+              Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? 0}
+            </div>
           </>}
-          {t.uploading && (
-            <div style={{ color: '#f57c00', marginTop: 8 }}>Uploading to Google Drive...</div>
-          )}
           {t.error && (
             <div style={{ color: 'red', marginTop: 8 }}>Error: {t.error}</div>
           )}
           {t.files.length > 0 && (
             <div style={{ marginTop: 12 }}>
-              <strong style={{ fontSize: 13 }}>Ready to download from Google Drive:</strong>
+              <strong style={{ fontSize: 13 }}>
+                {t.progress.done ? 'Ready:' : 'Downloading — click to stream now:'}
+              </strong>
               {t.files.map(f => (
                 <div key={f.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}>
-                  <span style={{ fontSize: 13, marginRight: 12 }}>{f.name} <span style={{ color: '#888' }}>({(f.size / 1024 / 1024).toFixed(1)} MB)</span></span>
-                  <a href={f.url} download style={{ textDecoration: 'none' }}>
+                  <span style={{ fontSize: 13, marginRight: 12 }}>
+                    {f.name} <span style={{ color: '#888' }}>({(f.size / 1024 / 1024).toFixed(1)} MB)</span>
+                  </span>
+                  <a href={f.url} download={f.name} style={{ textDecoration: 'none' }}>
                     <button style={{ background: '#1a73e8', color: '#fff', border: 'none', borderRadius: 4, padding: '6px 14px', cursor: 'pointer' }}>
                       Download
                     </button>

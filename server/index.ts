@@ -9,7 +9,6 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import os from 'os'
-import { google } from 'googleapis'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -26,52 +25,38 @@ const io = new Server(server, { cors: { origin: '*' } })
 const client = new WebTorrent()
 const upload = multer({ dest: os.tmpdir() })
 
-client.on('error', (err) => console.error('WebTorrent client error:', err))
-
-// --- Google Drive ---
-
-function getDrive() {
-  const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
-  if (!keyJson) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY env var not set')
-  const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(keyJson),
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
-  })
-  return google.drive({ version: 'v3', auth })
-}
-
-async function uploadToDrive(filePath: string, fileName: string): Promise<{ name: string; url: string; size: number }> {
-  const drive = getDrive()
-  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID
-
-  const stat = fs.statSync(filePath)
-
-  const file = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      ...(folderId ? { parents: [folderId] } : {}),
-    },
-    media: { body: fs.createReadStream(filePath) },
-    fields: 'id,size',
-  })
-
-  const fileId = file.data.id!
-
-  await drive.permissions.create({
-    fileId,
-    requestBody: { role: 'reader', type: 'anyone' },
-  })
-
-  return {
-    name: fileName,
-    url: `https://drive.google.com/uc?export=download&id=${fileId}`,
-    size: stat.size,
-  }
-}
-
-// --- Routes ---
+client.on('error', (err) => console.error('WebTorrent error:', err))
 
 app.use(express.json())
+
+// Stream a file directly from WebTorrent to the browser.
+// Works even while the torrent is still downloading.
+app.get('/stream/:infoHash/:fileIndex', (req, res) => {
+  const torrent = client.get(req.params.infoHash) as Torrent | null
+  if (!torrent) { res.status(404).send('Torrent not found'); return }
+
+  const fileIndex = parseInt(req.params.fileIndex)
+  const file = torrent.files[fileIndex] as TorrentFile | undefined
+  if (!file) { res.status(404).send('File not found'); return }
+
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`)
+  res.setHeader('Content-Type', 'application/octet-stream')
+  res.setHeader('Accept-Ranges', 'bytes')
+
+  const rangeHeader = req.headers.range
+  if (rangeHeader) {
+    const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-')
+    const start = parseInt(startStr) || 0
+    const end = endStr ? parseInt(endStr) : file.length - 1
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${file.length}`)
+    res.setHeader('Content-Length', end - start + 1)
+    res.status(206)
+    file.createReadStream({ start, end }).pipe(res)
+  } else {
+    res.setHeader('Content-Length', file.length)
+    file.createReadStream().pipe(res)
+  }
+})
 
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST))
@@ -86,7 +71,11 @@ app.get('/api/torrents', (_req, res) => {
     downloadSpeed: t.downloadSpeed,
     numPeers: t.numPeers,
     done: t.done,
-    files: driveFiles.get(t.infoHash) ?? [],
+    files: t.files.map((f: TorrentFile, i: number) => ({
+      name: f.name,
+      url: `/stream/${t.infoHash}/${i}`,
+      size: f.length,
+    })),
   })))
 })
 
@@ -101,10 +90,6 @@ app.post('/api/torrent/magnet', (req, res) => {
   if (!magnet) { res.status(400).json({ error: 'No magnet link' }); return }
   addTorrent(injectTrackers(magnet), res)
 })
-
-// --- Helpers ---
-
-const driveFiles = new Map<string, { name: string; url: string; size: number }[]>()
 
 const PUBLIC_TRACKERS = [
   'udp://tracker.opentrackr.org:1337/announce',
@@ -124,6 +109,14 @@ function parseMagnetHash(magnet: string): string | null {
   return m ? m[1].toLowerCase() : null
 }
 
+function torrentFiles(torrent: Torrent) {
+  return torrent.files.map((f: TorrentFile, i: number) => ({
+    name: f.name,
+    url: `/stream/${torrent.infoHash}/${i}`,
+    size: f.length,
+  }))
+}
+
 function setupTorrentEvents(torrent: Torrent) {
   const interval = setInterval(() => {
     io.emit(`progress:${torrent.infoHash}`, {
@@ -134,35 +127,6 @@ function setupTorrentEvents(torrent: Torrent) {
     })
     if (torrent.done) clearInterval(interval)
   }, 1000)
-
-  torrent.on('done', async () => {
-    console.log(`Torrent done: ${torrent.name}`)
-    io.emit(`uploading:${torrent.infoHash}`, {})
-
-    try {
-      const uploaded = await Promise.all(
-        torrent.files.map(async (f: TorrentFile) => {
-          const localPath = path.join(DOWNLOAD_DIR, torrent.name, f.name)
-          console.log(`Uploading to Drive: ${f.name}`)
-          const result = await uploadToDrive(localPath, f.name)
-          fs.rmSync(localPath, { force: true })
-          return result
-        })
-      )
-
-      driveFiles.set(torrent.infoHash, uploaded)
-      io.emit(`done:${torrent.infoHash}`, { files: uploaded })
-      console.log(`All files uploaded to Drive for: ${torrent.name}`)
-
-      // Clean up torrent folder
-      const torrentDir = path.join(DOWNLOAD_DIR, torrent.name)
-      fs.rmSync(torrentDir, { recursive: true, force: true })
-    } catch (err) {
-      console.error('Drive upload error:', err)
-      const message = err instanceof Error ? err.message : String(err)
-      io.emit(`error:${torrent.infoHash}`, { error: `Drive upload failed: ${message}` })
-    }
-  })
 
   torrent.on('error', (err) => {
     console.error('Torrent error:', err)
@@ -192,13 +156,15 @@ function addTorrent(source: string, res: any) {
 
       client.add(source, { path: DOWNLOAD_DIR }, (torrent: Torrent) => {
         clearTimeout(metaTimeout)
-        console.log(`Downloading: ${torrent.name}`)
-        io.emit(`meta:${torrent.infoHash}`, { name: torrent.name })
+        console.log(`Ready: ${torrent.name} (${torrent.files.length} files)`)
+        // Emit name + full file list immediately — user can start downloading right away
+        io.emit(`meta:${torrent.infoHash}`, { name: torrent.name, files: torrentFiles(torrent) })
         setupTorrentEvents(torrent)
       })
     } else {
       client.add(source, { path: DOWNLOAD_DIR }, (torrent: Torrent) => {
         res.json({ id: torrent.infoHash, name: torrent.name })
+        io.emit(`meta:${torrent.infoHash}`, { name: torrent.name, files: torrentFiles(torrent) })
         setupTorrentEvents(torrent)
       })
     }
@@ -208,6 +174,4 @@ function addTorrent(source: string, res: any) {
   }
 }
 
-server.listen(PORT, () => {
-  console.log(`Server running on :${PORT}`)
-})
+server.listen(PORT, () => console.log(`Server running on :${PORT}`))
