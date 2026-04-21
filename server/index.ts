@@ -32,7 +32,7 @@ app.use(express.json())
 app.use('/files', express.static(DOWNLOAD_DIR))
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST))
-  app.get('*', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
+  app.get('/*splat', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
 }
 
 app.post('/api/torrent/upload', upload.single('torrent'), (req, res) => {
