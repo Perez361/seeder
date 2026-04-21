@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { io } from 'socket.io-client'
 
 const socket = io()
@@ -12,6 +12,35 @@ export default function App() {
   const [magnet, setMagnet] = useState('')
   const [loading, setLoading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    fetch('/api/torrents')
+      .then(r => r.json())
+      .then((list: { id: string; name: string; progress: number; downloadSpeed: number; numPeers: number; done: boolean; files: TorrentFile[] }[]) => {
+        setTorrents(prev => {
+          const next = { ...prev }
+          list.forEach(t => {
+            next[t.id] = {
+              name: t.name,
+              meta: true,
+              progress: { progress: t.progress, downloadSpeed: t.downloadSpeed, numPeers: t.numPeers, done: t.done },
+              files: t.files,
+            }
+          })
+          return next
+        })
+        list.forEach(t => {
+          socket.on(`meta:${t.id}`, ({ name }: { name: string }) =>
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], name, meta: true } })))
+          socket.on(`progress:${t.id}`, (data: Progress) =>
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], progress: data } })))
+          socket.on(`done:${t.id}`, ({ files }: { files: TorrentFile[] }) =>
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], files } })))
+          socket.on(`error:${t.id}`, ({ error }: { error: string }) =>
+            setTorrents(prev => ({ ...prev, [t.id]: { ...prev[t.id], error } })))
+        })
+      })
+  }, [])
 
   const uploadTorrent = async (file: File) => {
     const form = new FormData()

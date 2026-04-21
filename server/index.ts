@@ -35,6 +35,22 @@ if (fs.existsSync(CLIENT_DIST)) {
   app.get('/*splat', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
 }
 
+app.get('/api/torrents', (_req, res) => {
+  res.json(client.torrents.map((t: Torrent) => ({
+    id: t.infoHash,
+    name: t.name,
+    progress: Math.round(t.progress * 100),
+    downloadSpeed: t.downloadSpeed,
+    numPeers: t.numPeers,
+    done: t.done,
+    files: t.done ? t.files.map((f: TorrentFile) => ({
+      name: f.name,
+      url: `/files/${t.name}/${f.name}`,
+      size: f.length,
+    })) : [],
+  })))
+})
+
 app.post('/api/torrent/upload', upload.single('torrent'), (req, res) => {
   const torrentPath = req.file?.path
   if (!torrentPath) { res.status(400).json({ error: 'No file' }); return }
