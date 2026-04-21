@@ -129,21 +129,24 @@ export default function App() {
             </div>
             <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? 0}</div>
           </>}
-          <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
-            Saving to server downloads folder
-          </div>
           {t.error && (
             <div style={{ color: 'red', marginTop: 8 }}>Error: {t.error}</div>
           )}
-          {t.progress.done && t.files.length === 0 && (
-            <div style={{ color: 'green', marginTop: 8 }}>Download complete! Check your Downloads folder.</div>
+          {t.files.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <strong style={{ fontSize: 13 }}>Ready to download:</strong>
+              {t.files.map(f => (
+                <div key={f.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}>
+                  <span style={{ fontSize: 13, marginRight: 12 }}>{f.name} <span style={{ color: '#888' }}>({(f.size / 1024 / 1024).toFixed(1)} MB)</span></span>
+                  <a href={f.url} download style={{ textDecoration: 'none' }}>
+                    <button style={{ background: '#1a73e8', color: '#fff', border: 'none', borderRadius: 4, padding: '6px 14px', cursor: 'pointer' }}>
+                      Download
+                    </button>
+                  </a>
+                </div>
+              ))}
+            </div>
           )}
-          {t.files.map(f => (
-            <a key={f.name} href={f.url} download
-              style={{ display: 'block', marginTop: 8, color: '#1a73e8' }}>
-              ⬇ {f.name} ({(f.size / 1024 / 1024).toFixed(1)} MB)
-            </a>
-          ))}
         </div>
       ))}
     </div>

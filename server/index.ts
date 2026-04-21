@@ -30,6 +30,12 @@ client.on('error', (err) => console.error('WebTorrent client error:', err))
 
 app.use(express.json())
 app.use('/files', express.static(DOWNLOAD_DIR))
+
+app.get('/download/:torrent/:file', (req, res) => {
+  const filePath = path.join(DOWNLOAD_DIR, req.params.torrent, req.params.file)
+  if (!filePath.startsWith(DOWNLOAD_DIR)) { res.status(403).send('Forbidden'); return }
+  res.download(filePath)
+})
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST))
   app.get('/*splat', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
@@ -45,7 +51,7 @@ app.get('/api/torrents', (_req, res) => {
     done: t.done,
     files: t.done ? t.files.map((f: TorrentFile) => ({
       name: f.name,
-      url: `/files/${t.name}/${f.name}`,
+      url: `/download/${encodeURIComponent(t.name)}/${encodeURIComponent(f.name)}`,
       size: f.length,
     })) : [],
   })))
@@ -103,7 +109,7 @@ function setupTorrentEvents(torrent: Torrent) {
     io.emit(`done:${torrent.infoHash}`, {
       files: torrent.files.map((f: TorrentFile) => ({
         name: f.name,
-        url: `/files/${torrent.name}/${f.name}`,
+        url: `/download/${encodeURIComponent(torrent.name)}/${encodeURIComponent(f.name)}`,
         size: f.length,
       }))
     })
