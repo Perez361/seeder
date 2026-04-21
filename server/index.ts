@@ -13,6 +13,9 @@ import os from 'os'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001
+const CLIENT_DIST = path.join(__dirname, '../client/dist')
+
 const app = express()
 const server = http.createServer(app)
 const io = new Server(server, { cors: { origin: '*' } })
@@ -27,6 +30,10 @@ client.on('error', (err) => console.error('WebTorrent client error:', err))
 
 app.use(express.json())
 app.use('/files', express.static(DOWNLOAD_DIR))
+if (fs.existsSync(CLIENT_DIST)) {
+  app.use(express.static(CLIENT_DIST))
+  app.get('*', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
+}
 
 app.post('/api/torrent/upload', upload.single('torrent'), (req, res) => {
   const torrentPath = req.file?.path
@@ -55,6 +62,7 @@ function setupTorrentEvents(torrent: Torrent) {
       downloaded: torrent.downloaded,
       length: torrent.length,
       done: torrent.done,
+      numPeers: torrent.numPeers,
     })
     if (torrent.done) clearInterval(interval)
   }, 1000)
@@ -113,7 +121,7 @@ function addTorrent(source: string, res: any) {
   }
 }
 
-server.listen(3001, () => {
-  console.log('Server running on :3001')
+server.listen(PORT, () => {
+  console.log(`Server running on :${PORT}`)
   console.log(`Saving downloads to: ${DOWNLOAD_DIR}`)
 })

@@ -1,10 +1,10 @@
 import { useState, useRef } from 'react'
 import { io } from 'socket.io-client'
 
-const socket = io('http://localhost:3001')
+const socket = io()
 
 type TorrentFile = { name: string; url: string; size: number }
-type Progress = { progress: number; downloadSpeed: number; done: boolean }
+type Progress = { progress: number; downloadSpeed: number; done: boolean; numPeers?: number }
 type TorrentEntry = { name: string; progress: Progress; files: TorrentFile[]; error?: string }
 
 export default function App() {
@@ -94,7 +94,7 @@ export default function App() {
           <div style={{ background: '#eee', borderRadius: 4, height: 8, margin: '8px 0' }}>
             <div style={{ background: '#4caf50', width: `${t.progress.progress}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
           </div>
-          <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s</div>
+          <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? '...'}</div>
           <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
             Saving to: C:\Users\Docile\Downloads
           </div>
@@ -105,7 +105,7 @@ export default function App() {
             <div style={{ color: 'green', marginTop: 8 }}>Download complete! Check your Downloads folder.</div>
           )}
           {t.files.map(f => (
-            <a key={f.name} href={`http://localhost:3001${f.url}`} download
+            <a key={f.name} href={f.url} download
               style={{ display: 'block', marginTop: 8, color: '#1a73e8' }}>
               ⬇ {f.name} ({(f.size / 1024 / 1024).toFixed(1)} MB)
             </a>
