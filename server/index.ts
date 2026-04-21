@@ -116,9 +116,16 @@ function addTorrent(source: string, res: any) {
       // Respond right away so the client can register socket listeners before
       // metadata arrives. The infoHash is stable and won't change.
       res.json({ id: immediateHash, name: immediateHash })
+
+      const metaTimeout = setTimeout(() => {
+        console.error(`Metadata timeout for ${immediateHash}`)
+        io.emit(`error:${immediateHash}`, { error: 'Timed out fetching metadata — torrent may be dead or network is blocking peer connections.' })
+        client.remove(immediateHash)
+      }, 60_000)
+
       client.add(source, { path: DOWNLOAD_DIR }, (torrent: Torrent) => {
+        clearTimeout(metaTimeout)
         console.log(`Downloading: ${torrent.name} → ${DOWNLOAD_DIR}`)
-        // Send the real name now that we have it
         io.emit(`meta:${torrent.infoHash}`, { name: torrent.name })
         setupTorrentEvents(torrent)
       })

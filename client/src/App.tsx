@@ -5,7 +5,7 @@ const socket = io()
 
 type TorrentFile = { name: string; url: string; size: number }
 type Progress = { progress: number; downloadSpeed: number; done: boolean; numPeers?: number }
-type TorrentEntry = { name: string; progress: Progress; files: TorrentFile[]; error?: string }
+type TorrentEntry = { name: string; meta: boolean; progress: Progress; files: TorrentFile[]; error?: string }
 
 export default function App() {
   const [torrents, setTorrents] = useState<Record<string, TorrentEntry>>({})
@@ -43,11 +43,11 @@ export default function App() {
   const registerTorrent = (id: string, name: string) => {
     setTorrents(prev => ({
       ...prev,
-      [id]: { name, progress: { progress: 0, downloadSpeed: 0, done: false }, files: [] }
+      [id]: { name, meta: false, progress: { progress: 0, downloadSpeed: 0, done: false }, files: [] }
     }))
 
     socket.on(`meta:${id}`, ({ name: realName }: { name: string }) => {
-      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], name: realName } }))
+      setTorrents(prev => ({ ...prev, [id]: { ...prev[id], name: realName, meta: true } }))
     })
 
     socket.on(`progress:${id}`, (data: Progress) => {
@@ -89,14 +89,19 @@ export default function App() {
       {/* Torrent list */}
       {Object.entries(torrents).map(([id, t]) => (
         <div key={id} style={{ border: '1px solid #ccc', padding: 16, marginTop: 16, borderRadius: 8 }}>
-          <strong>{t.name}</strong>
-          <div style={{ marginTop: 8 }}>Progress: {t.progress.progress}%</div>
-          <div style={{ background: '#eee', borderRadius: 4, height: 8, margin: '8px 0' }}>
-            <div style={{ background: '#4caf50', width: `${t.progress.progress}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
-          </div>
-          <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? '...'}</div>
+          <strong>{t.meta ? t.name : 'Fetching metadata...'}</strong>
+          {!t.meta && !t.error && (
+            <div style={{ marginTop: 8, fontSize: 13, color: '#888' }}>Connecting to peers, please wait...</div>
+          )}
+          {t.meta && <>
+            <div style={{ marginTop: 8 }}>Progress: {t.progress.progress}%</div>
+            <div style={{ background: '#eee', borderRadius: 4, height: 8, margin: '8px 0' }}>
+              <div style={{ background: '#4caf50', width: `${t.progress.progress}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
+            </div>
+            <div>Speed: {(t.progress.downloadSpeed / 1024).toFixed(1)} KB/s &nbsp;|&nbsp; Peers: {t.progress.numPeers ?? 0}</div>
+          </>}
           <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
-            Saving to: C:\Users\Docile\Downloads
+            Saving to server downloads folder
           </div>
           {t.error && (
             <div style={{ color: 'red', marginTop: 8 }}>Error: {t.error}</div>
