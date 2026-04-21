@@ -59,7 +59,7 @@ app.use(express.json())
 
 // Stream an active (in-progress) torrent file directly from WebTorrent
 app.get('/stream/active/:infoHash/:fileIndex', (req, res) => {
-  const torrent = client.get(req.params.infoHash) as Torrent | null
+  const torrent = client.torrents.find((t: Torrent) => t.infoHash === req.params.infoHash) ?? null
   if (!torrent) { res.status(404).send('Torrent not found'); return }
   const file = torrent.files[parseInt(req.params.fileIndex)] as TorrentFile | undefined
   if (!file) { res.status(404).send('File not found'); return }
