@@ -44,8 +44,23 @@ app.post('/api/torrent/upload', upload.single('torrent'), (req, res) => {
 app.post('/api/torrent/magnet', (req, res) => {
   const { magnet } = req.body
   if (!magnet) { res.status(400).json({ error: 'No magnet link' }); return }
-  addTorrent(magnet, res)
+  addTorrent(injectTrackers(magnet), res)
 })
+
+// Public HTTPS trackers — used as fallback when UDP/DHT is blocked on the host network.
+const PUBLIC_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'https://tracker.opentrackr.org/announce',
+  'https://tracker.gbitt.info/announce',
+  'https://tracker.tamersunion.org/announce',
+]
+
+function injectTrackers(magnet: string): string {
+  const extra = PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
+  return magnet + extra
+}
 
 // Parse infoHash from a magnet URI so we can respond immediately without
 // waiting for peer metadata (which can hang for seconds or indefinitely).
