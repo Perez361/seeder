@@ -9,33 +9,70 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import os from 'os'
+import { google } from 'googleapis'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001
 const CLIENT_DIST = path.join(__dirname, '../../client/dist')
+const DOWNLOAD_DIR = path.join(os.tmpdir(), 'seeder-downloads')
+
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true })
 
 const app = express()
 const server = http.createServer(app)
 const io = new Server(server, { cors: { origin: '*' } })
 const client = new WebTorrent()
-const upload = multer({ dest: 'uploads/' })
-const DOWNLOAD_DIR = path.join(os.homedir(), 'Downloads')
+const upload = multer({ dest: os.tmpdir() })
 
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true })
-
-// Log top-level WebTorrent errors so they don't crash the process silently
 client.on('error', (err) => console.error('WebTorrent client error:', err))
 
-app.use(express.json())
-app.use('/files', express.static(DOWNLOAD_DIR))
+// --- Google Drive ---
 
-app.get('/download/:torrent/:file', (req, res) => {
-  const filePath = path.join(DOWNLOAD_DIR, req.params.torrent, req.params.file)
-  if (!filePath.startsWith(DOWNLOAD_DIR)) { res.status(403).send('Forbidden'); return }
-  res.download(filePath)
-})
+function getDrive() {
+  const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY
+  if (!keyJson) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY env var not set')
+  const auth = new google.auth.GoogleAuth({
+    credentials: JSON.parse(keyJson),
+    scopes: ['https://www.googleapis.com/auth/drive.file'],
+  })
+  return google.drive({ version: 'v3', auth })
+}
+
+async function uploadToDrive(filePath: string, fileName: string): Promise<{ name: string; url: string; size: number }> {
+  const drive = getDrive()
+  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID
+
+  const stat = fs.statSync(filePath)
+
+  const file = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      ...(folderId ? { parents: [folderId] } : {}),
+    },
+    media: { body: fs.createReadStream(filePath) },
+    fields: 'id,size',
+  })
+
+  const fileId = file.data.id!
+
+  await drive.permissions.create({
+    fileId,
+    requestBody: { role: 'reader', type: 'anyone' },
+  })
+
+  return {
+    name: fileName,
+    url: `https://drive.google.com/uc?export=download&id=${fileId}`,
+    size: stat.size,
+  }
+}
+
+// --- Routes ---
+
+app.use(express.json())
+
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST))
   app.get('/*splat', (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')))
@@ -49,11 +86,7 @@ app.get('/api/torrents', (_req, res) => {
     downloadSpeed: t.downloadSpeed,
     numPeers: t.numPeers,
     done: t.done,
-    files: t.done ? t.files.map((f: TorrentFile) => ({
-      name: f.name,
-      url: `/download/${encodeURIComponent(t.name)}/${encodeURIComponent(f.name)}`,
-      size: f.length,
-    })) : [],
+    files: driveFiles.get(t.infoHash) ?? [],
   })))
 })
 
@@ -69,7 +102,10 @@ app.post('/api/torrent/magnet', (req, res) => {
   addTorrent(injectTrackers(magnet), res)
 })
 
-// Public HTTPS trackers — used as fallback when UDP/DHT is blocked on the host network.
+// --- Helpers ---
+
+const driveFiles = new Map<string, { name: string; url: string; size: number }[]>()
+
 const PUBLIC_TRACKERS = [
   'udp://tracker.opentrackr.org:1337/announce',
   'udp://open.stealth.si:80/announce',
@@ -80,12 +116,9 @@ const PUBLIC_TRACKERS = [
 ]
 
 function injectTrackers(magnet: string): string {
-  const extra = PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
-  return magnet + extra
+  return magnet + PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
 }
 
-// Parse infoHash from a magnet URI so we can respond immediately without
-// waiting for peer metadata (which can hang for seconds or indefinitely).
 function parseMagnetHash(magnet: string): string | null {
   const m = magnet.match(/xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i)
   return m ? m[1].toLowerCase() : null
@@ -96,23 +129,39 @@ function setupTorrentEvents(torrent: Torrent) {
     io.emit(`progress:${torrent.infoHash}`, {
       progress: Math.round(torrent.progress * 100),
       downloadSpeed: torrent.downloadSpeed,
-      downloaded: torrent.downloaded,
-      length: torrent.length,
       done: torrent.done,
       numPeers: torrent.numPeers,
     })
     if (torrent.done) clearInterval(interval)
   }, 1000)
 
-  torrent.on('done', () => {
-    console.log(`Done: ${DOWNLOAD_DIR}/${torrent.name}`)
-    io.emit(`done:${torrent.infoHash}`, {
-      files: torrent.files.map((f: TorrentFile) => ({
-        name: f.name,
-        url: `/download/${encodeURIComponent(torrent.name)}/${encodeURIComponent(f.name)}`,
-        size: f.length,
-      }))
-    })
+  torrent.on('done', async () => {
+    console.log(`Torrent done: ${torrent.name}`)
+    io.emit(`uploading:${torrent.infoHash}`, {})
+
+    try {
+      const uploaded = await Promise.all(
+        torrent.files.map(async (f: TorrentFile) => {
+          const localPath = path.join(DOWNLOAD_DIR, torrent.name, f.name)
+          console.log(`Uploading to Drive: ${f.name}`)
+          const result = await uploadToDrive(localPath, f.name)
+          fs.rmSync(localPath, { force: true })
+          return result
+        })
+      )
+
+      driveFiles.set(torrent.infoHash, uploaded)
+      io.emit(`done:${torrent.infoHash}`, { files: uploaded })
+      console.log(`All files uploaded to Drive for: ${torrent.name}`)
+
+      // Clean up torrent folder
+      const torrentDir = path.join(DOWNLOAD_DIR, torrent.name)
+      fs.rmSync(torrentDir, { recursive: true, force: true })
+    } catch (err) {
+      console.error('Drive upload error:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      io.emit(`error:${torrent.infoHash}`, { error: `Drive upload failed: ${message}` })
+    }
   })
 
   torrent.on('error', (err) => {
@@ -125,7 +174,6 @@ function addTorrent(source: string, res: any) {
   try {
     const immediateHash = parseMagnetHash(source)
 
-    // Prevent duplicate
     const existing = client.torrents.find(
       t => t.infoHash === immediateHash || t.magnetURI === source
     )
@@ -135,26 +183,21 @@ function addTorrent(source: string, res: any) {
     }
 
     if (immediateHash) {
-      // Respond right away so the client can register socket listeners before
-      // metadata arrives. The infoHash is stable and won't change.
       res.json({ id: immediateHash, name: immediateHash })
 
       const metaTimeout = setTimeout(() => {
-        console.error(`Metadata timeout for ${immediateHash}`)
-        io.emit(`error:${immediateHash}`, { error: 'Timed out fetching metadata — torrent may be dead or network is blocking peer connections.' })
+        io.emit(`error:${immediateHash}`, { error: 'Timed out — torrent may be dead or unreachable.' })
         client.remove(immediateHash)
       }, 60_000)
 
       client.add(source, { path: DOWNLOAD_DIR }, (torrent: Torrent) => {
         clearTimeout(metaTimeout)
-        console.log(`Downloading: ${torrent.name} → ${DOWNLOAD_DIR}`)
+        console.log(`Downloading: ${torrent.name}`)
         io.emit(`meta:${torrent.infoHash}`, { name: torrent.name })
         setupTorrentEvents(torrent)
       })
     } else {
-      // .torrent file upload — infoHash only known after parsing, so wait for callback
       client.add(source, { path: DOWNLOAD_DIR }, (torrent: Torrent) => {
-        console.log(`Downloading: ${torrent.name} → ${DOWNLOAD_DIR}`)
         res.json({ id: torrent.infoHash, name: torrent.name })
         setupTorrentEvents(torrent)
       })
@@ -167,5 +210,4 @@ function addTorrent(source: string, res: any) {
 
 server.listen(PORT, () => {
   console.log(`Server running on :${PORT}`)
-  console.log(`Saving downloads to: ${DOWNLOAD_DIR}`)
 })
