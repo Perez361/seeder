@@ -18,4 +18,6 @@ COPY server/ ./server/
 EXPOSE 3001
 
 WORKDIR /app/server
-CMD ["npx", "ts-node", "--esm", "index.ts"]
+RUN npx tsc
+
+CMD ["node", "dist/index.js"]

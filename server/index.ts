@@ -14,7 +14,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001
-const CLIENT_DIST = path.join(__dirname, '../client/dist')
+const CLIENT_DIST = path.join(__dirname, '../../client/dist')
 
 const app = express()
 const server = http.createServer(app)
